@@ -18,37 +18,10 @@ Parameters:
     Type: AWS::EC2::AvailabilityZone::Name
     ConstraintDescription: Must be a valid availability zone
 
-  SSHFrom:
-    Description: Limit SSH access to bastion hosts to a CIDR IP block
-    Type: String
-    MinLength: 9
-    MaxLength: 18
-    Default: 0.0.0.0/0
-
-  ELBIngressPort:
-    Description: The ELB ingress port used by security groups
-    Type: Number
-    MinValue: 0
-    MaxValue: 65535
-    ConstraintDescription: TCP ports must be between 0 - 65535
-    Default: 80
-
-  AppIngressPort:
-    Description: The application ingress port used by security groups
-    Type: Number
-    MinValue: 0
-    MaxValue: 65535
-    ConstraintDescription: TCP ports must be between 0 - 65535
-    Default: 80
-
-  SingleNatGateway:
-    Description: Set to true to only install one NAT gateway
-    Type: String
-    ConstraintDescription: Value must be true or false
-    Default: true
-    AllowedValues:
-      - true
-      - false
+  AvailabilityZone3:
+    Description: The second availability zone in the region
+    Type: AWS::EC2::AvailabilityZone::Name
+    ConstraintDescription: Must be a valid availability zone
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -58,24 +31,14 @@ Metadata:
         Parameters:
           - AvailabilityZone1
           - AvailabilityZone2
-      - Label:
-          default: Ingress Ports
-        Parameters:
-          - ELBIngressPort
-          - AppIngressPort
+          - AvailabilityZone3
     ParameterLabels:
       AvailabilityZone1:
         default: Availability Zone 1
       AvailabilityZone2:
         default: Availability Zone 2
-      ELBIngressPort:
-        default: Load Balancer Port
-      AppIngressPort:
-        default: Application Port
-
-Conditions:
-  CreateSingleNatGateway: !Equals [ !Ref SingleNatGateway, true ]
-  CreateMultipleNatGateways: !Not [ Condition: CreateSingleNatGateway ]
+      AvailabilityZone3:
+        default: Availability Zone 3
 
 Mappings:
 
@@ -87,10 +50,14 @@ Mappings:
       CIDR: 10.50.0.0/24
     Public2:
       CIDR: 10.50.1.0/24
+    Public3:
+      CIDR: 10.50.2.0/24
     Private1:
       CIDR: 10.50.64.0/19
     Private2:
       CIDR: 10.50.96.0/19
+    Private3:
+      CIDR: 10.50.128.0/19
 
 Resources:
 
@@ -124,6 +91,16 @@ Resources:
       - Key: Name
         Value: !Sub "${AWS::StackName}-PublicSubnet2"
 
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [ CIDRMap, Public3, CIDR ]
+      AvailabilityZone: !Ref AvailabilityZone3
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-PublicSubnet3"
+
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -143,6 +120,17 @@ Resources:
       Tags:
       - Key: Name
         Value: !Sub "${AWS::StackName}-PrivateSubnet2"
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [ CIDRMap, Private3, CIDR ]
+      AvailabilityZone: !Ref AvailabilityZone3
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-PrivateSubnet3"
+
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -185,6 +173,12 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
+  PublicSubnetRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet3
+      RouteTableId: !Ref PublicRouteTable
+
   PublicSubnetNetworkAclAssociation1:
     Type: AWS::EC2::SubnetNetworkAclAssociation
     Properties:
@@ -197,145 +191,11 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       NetworkAclId: !GetAtt VPC.DefaultNetworkAcl
 
-  ELBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  PublicSubnetNetworkAclAssociation3:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
     Properties:
-      GroupDescription: Enable HTTP/HTTPs ingress
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        ToPort: !Ref ELBIngressPort
-        FromPort: !Ref ELBIngressPort
-      Tags:
-      - Key: Name
-        Value: !Sub "${AWS::StackName}-ELBSecurityGroup"
-
-  ELBSecurityGroupToAppEgress:
-    Type: AWS::EC2::SecurityGroupEgress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref ELBSecurityGroup
-      IpProtocol: tcp
-      ToPort: !Ref AppIngressPort
-      FromPort: !Ref AppIngressPort
-      DestinationSecurityGroupId: !Ref AppSecurityGroup
-
-  AppSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Enable access from ELB to app
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-      - SourceSecurityGroupId: !Ref ELBSecurityGroup
-        IpProtocol: tcp
-        ToPort: !Ref AppIngressPort
-        FromPort: !Ref AppIngressPort
-      - SourceSecurityGroupId: !Ref BastionSecurityGroup
-        IpProtocol: tcp
-        ToPort: 22
-        FromPort: 22
-      Tags:
-      - Key: Name
-        Value: !Sub "${AWS::StackName}-AppSecurityGroup"
-
-  AppSecurityGroupFromELBIngress:
-    Type: AWS::EC2::SecurityGroupIngress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref AppSecurityGroup
-      IpProtocol: tcp
-      ToPort: !Ref AppIngressPort
-      FromPort: !Ref AppIngressPort
-      SourceSecurityGroupId: !Ref ELBSecurityGroup
-
-  AppSecurityGroupFromBastionIngress:
-    Type: AWS::EC2::SecurityGroupIngress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref AppSecurityGroup
-      IpProtocol: tcp
-      ToPort: 22
-      FromPort: 22
-      SourceSecurityGroupId: !Ref BastionSecurityGroup
-
-  BastionSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Enable access to the bastion host
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-      - CidrIp: !Ref SSHFrom
-        IpProtocol: tcp
-        ToPort: 22
-        FromPort: 22
-      SecurityGroupEgress:
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        ToPort: 80
-        FromPort: 80
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        ToPort: 443
-        FromPort: 443
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: udp
-        ToPort: 123
-        FromPort: 123
-      Tags:
-      - Key: Name
-        Value: !Sub "${AWS::StackName}-BastionSecurityGroup"
-
-  BastionSecurityGroupToAppEgress:
-    Type: AWS::EC2::SecurityGroupEgress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref BastionSecurityGroup
-      IpProtocol: tcp
-      ToPort: 22
-      FromPort: 22
-      DestinationSecurityGroupId: !Ref AppSecurityGroup
-
-  BastionSecurityGroupToDbEgress:
-    Type: AWS::EC2::SecurityGroupEgress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref BastionSecurityGroup
-      IpProtocol: tcp
-      ToPort: 5432
-      FromPort: 3306
-      DestinationSecurityGroupId: !Ref DbSecurityGroup
-
-  DbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Enable access to the RDS DB
-      VpcId: !Ref VPC
-      SecurityGroupEgress:
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        ToPort: 3306
-        FromPort: 3306
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        ToPort: 5432
-        FromPort: 5432
-      Tags:
-      - Key: Name
-        Value: !Sub "${AWS::StackName}-DbSecurityGroup"
-
-  DbSecurityGroupFromBastionIngress:
-    Type: AWS::EC2::SecurityGroupIngress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref DbSecurityGroup
-      IpProtocol: tcp
-      ToPort: 5432
-      FromPort: 3306
-      SourceSecurityGroupId: !Ref BastionSecurityGroup
-
-  DbSecurityGroupFromAppIngress:
-    Type: AWS::EC2::SecurityGroupIngress  # prevent security group circular references
-    Properties:
-      GroupId: !Ref DbSecurityGroup
-      IpProtocol: tcp
-      ToPort: 5432
-      FromPort: 3306
-      SourceSecurityGroupId: !Ref AppSecurityGroup
+      SubnetId: !Ref PublicSubnet3
+      NetworkAclId: !GetAtt VPC.DefaultNetworkAcl
 
   # NAT-related resources
   #
@@ -351,11 +211,17 @@ Resources:
 
   NatGateway2:
     DependsOn: VPCGatewayAttachment
-    Condition: CreateMultipleNatGateways
     Type: AWS::EC2::NatGateway
     Properties:
       AllocationId: !GetAtt NatEIP2.AllocationId
       SubnetId: !Ref PublicSubnet2
+
+  NatGateway3:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP3.AllocationId
+      SubnetId: !Ref PublicSubnet3
 
   NatEIP1:
     DependsOn: VPCGatewayAttachment
@@ -365,7 +231,12 @@ Resources:
 
   NatEIP2:
     DependsOn: VPCGatewayAttachment
-    Condition: CreateMultipleNatGateways
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatEIP3:
+    DependsOn: VPCGatewayAttachment
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
@@ -380,12 +251,19 @@ Resources:
 
   NatRouteTable2:
     Type: AWS::EC2::RouteTable
-    Condition: CreateMultipleNatGateways
     Properties:
       VpcId: !Ref VPC
       Tags:
       - Key: Name
         Value: !Sub "${AWS::StackName}-private-nat-2"
+
+  NatRouteTable3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-private-nat-3"
 
   NatRoute1:
     Type: AWS::EC2::Route
@@ -398,11 +276,18 @@ Resources:
   NatRoute2:
     Type: AWS::EC2::Route
     DependsOn: VPCGatewayAttachment
-    Condition: CreateMultipleNatGateways
     Properties:
       RouteTableId: !Ref NatRouteTable2
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGateway2
+
+  NatRoute3:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref NatRouteTable3
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway3
 
   PrivateSubnetRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -410,19 +295,17 @@ Resources:
       SubnetId: !Ref PrivateSubnet1
       RouteTableId: !Ref NatRouteTable1
 
-  PrivateSubnetRouteTableAssociationSingleNatGateway:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: CreateSingleNatGateway
-    Properties:
-      SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref NatRouteTable1
-
   PrivateSubnetRouteTableAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: CreateMultipleNatGateways
     Properties:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref NatRouteTable2
+
+  PrivateSubnetRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref NatRouteTable3
 
 Outputs:
 
@@ -456,6 +339,12 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnet2ID"
 
+  PublicSubnet3:
+    Description: Public subnet 3 ID
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet3ID"
+
   PrivateSubnet1:
     Description: Private subnet 1 ID
     Value: !Ref PrivateSubnet1
@@ -468,39 +357,9 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-PrivateSubnet2ID"
 
-  ELBSecurityGroup:
-    Description: Security group ID for Internet-facing ELB
-    Value: !GetAtt ELBSecurityGroup.GroupId
+  PrivateSubnet3:
+    Description: Private subnet 3 ID
+    Value: !Ref PrivateSubnet3
     Export:
-      Name: !Sub "${AWS::StackName}-ELBSecurityGroupID"
-
-  AppSecurityGroup:
-    Description: Security group ID for app behind ELB
-    Value: !GetAtt AppSecurityGroup.GroupId
-    Export:
-      Name: !Sub "${AWS::StackName}-AppSecurityGroupID"
-
-  BastionSecurityGroup:
-    Description: Security group ID for bastion host
-    Value: !GetAtt BastionSecurityGroup.GroupId
-    Export:
-      Name: !Sub "${AWS::StackName}-BastionGroupID"
-
-  DatabaseSecurityGroup:
-    Description: Security group ID for RDS database
-    Value: !GetAtt DbSecurityGroup.GroupId
-    Export:
-      Name: !Sub "${AWS::StackName}-DatabaseGroupID"
-
-  ELBIngressPort:
-    Description: ELB ingress port
-    Value: !Ref ELBIngressPort
-    Export:
-      Name: !Sub "${AWS::StackName}-ELBIngressPort"
-
-  AppIngressPort:
-    Description: App ingress port
-    Value: !Ref AppIngressPort
-    Export:
-      Name: !Sub "${AWS::StackName}-AppIngressPort"
+      Name: !Sub "${AWS::StackName}-PrivateSubnet3ID"
 
